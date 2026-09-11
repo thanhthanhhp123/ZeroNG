@@ -27,6 +27,17 @@ def test_select_offer_cheapest_under_cap():
         select_offer(offers, 0.1)
 
 
+def test_select_offer_skips_machines_that_failed():
+    offers = [
+        {"id": 1, "machine_id": 10, "dph_total": 0.13},
+        {"id": 2, "machine_id": 10, "dph_total": 0.14},  # same broken host, another offer
+        {"id": 3, "machine_id": 20, "dph_total": 0.16},
+    ]
+    assert select_offer(offers, 0.2, exclude_machines={10})["id"] == 3
+    with pytest.raises(RuntimeError):
+        select_offer(offers, 0.2, exclude_machines={10, 20})
+
+
 def test_ssh_target_prefers_direct():
     info = {
         "public_ipaddr": "1.2.3.4 ",

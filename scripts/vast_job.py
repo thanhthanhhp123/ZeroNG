@@ -39,6 +39,7 @@ def main() -> None:
     run.add_argument("--gpu", default="RTX 3090")
     run.add_argument("--max-dph", type=float, default=0.20, help="price cap, $/hour")
     run.add_argument("--max-hours", type=float, default=8.0)
+    run.add_argument("--max-attempts", type=int, default=3, help="machines to try if one hangs")
     run.add_argument("--disk", type=int, default=60, help="GB (priced into the offer search)")
     run.add_argument("--image", default=DEFAULT_IMAGE)
     run.add_argument("--identity", type=Path, default=Path.home() / ".ssh" / "id_ed25519_vast")
@@ -59,6 +60,7 @@ def main() -> None:
             gpu_name=args.gpu,
             max_dph=args.max_dph,
             max_hours=args.max_hours,
+            max_attempts=args.max_attempts,
             disk_gb=args.disk,
             image=args.image,
         )

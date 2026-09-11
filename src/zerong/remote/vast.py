@@ -43,6 +43,10 @@ class JobSpec:
     max_hours: float = 8.0
     disk_gb: int = 60
     image: str = DEFAULT_IMAGE
+    # Some hosts never start the container (stuck in "created"): give up on a machine after
+    # ssh_timeout_min and try the next cheapest one, at most max_attempts machines in total.
+    max_attempts: int = 3
+    ssh_timeout_min: float = 15.0
 
 
 @dataclass(frozen=True)
@@ -63,9 +67,19 @@ def offer_query(gpu_name: str, max_dph: float, min_disk_gb: int) -> str:
     )
 
 
-def select_offer(offers: list[dict], max_dph: float) -> dict:
-    """Cheapest offer under the price cap; ties broken by higher reliability."""
-    affordable = [o for o in offers if o.get("dph_total", float("inf")) <= max_dph]
+def select_offer(
+    offers: list[dict], max_dph: float, exclude_machines: frozenset | set = frozenset()
+) -> dict:
+    """Cheapest offer under the price cap, skipping machines that already failed us.
+
+    Ties are broken by higher reliability.
+    """
+    affordable = [
+        o
+        for o in offers
+        if o.get("dph_total", float("inf")) <= max_dph
+        and o.get("machine_id") not in exclude_machines
+    ]
     if not affordable:
         raise RuntimeError(f"no offer at or below ${max_dph:.3f}/h")
     return min(affordable, key=lambda o: (o["dph_total"], -o.get("reliability2", 0.0)))
@@ -256,39 +270,36 @@ class VastJob:
                     f"instance {previous['instance_id']} from a previous run is not destroyed"
                 )
         repo_url, commit = pushed_commit(repo_dir)
-        query = offer_query(self.spec.gpu_name, self.spec.max_dph, self.spec.disk_gb)
-        # --storage makes dph_total include the disk we will rent (the default prices 5 GB only).
-        offers = vastai_json(
-            "search", "offers", query, "-o", "dph", "--storage", str(self.spec.disk_gb)
-        )
-        offer = select_offer(offers, self.spec.max_dph)
-        self.log(
-            f"offer {offer['id']}: {offer['gpu_name']} ${offer['dph_total']:.3f}/h "
-            f"{offer.get('geolocation', '')}"
-        )
-        created = vastai_json(
-            "create", "instance", str(offer["id"]),
-            "--image", self.spec.image,
-            "--disk", str(self.spec.disk_gb),
-            "--ssh", "--direct",
-            "--label", f"zerong-{self.spec.name}",
-        )  # fmt: skip
         self.state = {
             "spec": asdict(self.spec),
             "commit": commit,
             "repo": repo_url,
-            "offer": {k: offer.get(k) for k in ("id", "gpu_name", "dph_total", "geolocation")},
-            "instance_id": created["new_contract"],
-            "started_at": datetime.now(UTC).isoformat(),
-            "status": "starting",
-            "destroyed": False,
+            "attempts": [],
+            "status": "provisioning",
         }
-        self.save()
-        self.log(f"instance {self.state['instance_id']} created for commit {commit[:8]}")
-        started = time.monotonic()
+        failed_machines: set = set()
+        for _ in range(self.spec.max_attempts):
+            offer = self.create_instance(failed_machines)
+            started = time.monotonic()
+            try:
+                target = self.wait_for_ssh(timeout_s=self.spec.ssh_timeout_min * 60)
+                break
+            except TimeoutError:
+                machine = offer.get("machine_id")
+                self.log(f"machine {machine} unreachable: destroying it, trying another")
+                self.close_attempt(offer, started, "unreachable", keep=False)
+                failed_machines.add(offer.get("machine_id"))
+            except BaseException as exc:
+                self.state["status"] = f"error: {exc!r}"[:300]
+                self.close_attempt(offer, started, "error", keep)
+                raise
+        else:
+            self.state["status"] = "error: no reachable machine"
+            self.save()
+            raise RuntimeError(f"no reachable machine after {self.spec.max_attempts} attempts")
+
         exit_code: int | None = None
         try:
-            target = self.wait_for_ssh(timeout_s=1200)
             script = render_job_script(
                 repo_url, commit, self.spec.datasets, self.spec.commands, self.spec.max_hours
             )
@@ -313,18 +324,67 @@ class VastJob:
             self.state["status"] = f"error: {exc!r}"[:300]
             raise
         finally:
-            hours = (time.monotonic() - started) / 3600
-            self.state["hours"] = round(hours, 3)
-            self.state["est_cost_usd"] = round(hours * offer["dph_total"], 3)
-            if not keep:
-                self.destroy()
+            self.close_attempt(offer, started, self.state["status"], keep)
             self.state["finished_at"] = datetime.now(UTC).isoformat()
             self.save()
             self.log(
-                f"status={self.state['status']} hours={hours:.2f} "
-                f"est_cost=${self.state['est_cost_usd']:.2f} destroyed={self.state['destroyed']}"
+                f"status={self.state['status']} attempts={len(self.state['attempts'])} "
+                f"hours={self.state['hours']:.2f} est_cost=${self.state['est_cost_usd']:.2f} "
+                f"destroyed={self.state['destroyed']}"
             )
         return exit_code
+
+    def create_instance(self, exclude_machines: set) -> dict:
+        query = offer_query(self.spec.gpu_name, self.spec.max_dph, self.spec.disk_gb)
+        # --storage makes dph_total include the disk we will rent (the default prices 5 GB only).
+        offers = vastai_json(
+            "search", "offers", query, "-o", "dph", "--storage", str(self.spec.disk_gb)
+        )
+        offer = select_offer(offers, self.spec.max_dph, exclude_machines)
+        self.log(
+            f"offer {offer['id']} (machine {offer.get('machine_id')}): {offer['gpu_name']} "
+            f"${offer['dph_total']:.3f}/h {offer.get('geolocation', '')}"
+        )
+        created = vastai_json(
+            "create", "instance", str(offer["id"]),
+            "--image", self.spec.image,
+            "--disk", str(self.spec.disk_gb),
+            "--ssh", "--direct",
+            "--label", f"zerong-{self.spec.name}",
+        )  # fmt: skip
+        self.state.update(
+            offer={
+                k: offer.get(k)
+                for k in ("id", "machine_id", "gpu_name", "dph_total", "geolocation")
+            },
+            instance_id=created["new_contract"],
+            started_at=datetime.now(UTC).isoformat(),
+            status="starting",
+            destroyed=False,
+        )
+        self.save()
+        instance_id, commit = self.state["instance_id"], self.state["commit"]
+        self.log(f"instance {instance_id} created for commit {commit[:8]}")
+        return offer
+
+    def close_attempt(self, offer: dict, started: float, outcome: str, keep: bool) -> None:
+        """Record one rented machine's time and estimated cost, then destroy it (unless keep)."""
+        hours = (time.monotonic() - started) / 3600
+        self.state["attempts"].append(
+            {
+                "instance_id": self.state.get("instance_id"),
+                "machine_id": offer.get("machine_id"),
+                "outcome": outcome,
+                "hours": round(hours, 3),
+                "est_cost_usd": round(hours * offer["dph_total"], 3),
+            }
+        )
+        if not keep:
+            self.destroy()
+        attempts = self.state["attempts"]
+        self.state["hours"] = round(sum(a["hours"] for a in attempts), 3)
+        self.state["est_cost_usd"] = round(sum(a["est_cost_usd"] for a in attempts), 3)
+        self.save()
 
     @staticmethod
     def check(result: subprocess.CompletedProcess) -> None:
