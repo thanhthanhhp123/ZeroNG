@@ -39,7 +39,7 @@ def main() -> None:
     run.add_argument("--gpu", default="RTX 3090")
     run.add_argument("--max-dph", type=float, default=0.20, help="price cap, $/hour")
     run.add_argument("--max-hours", type=float, default=8.0)
-    run.add_argument("--disk", type=int, default=120, help="GB")
+    run.add_argument("--disk", type=int, default=60, help="GB (priced into the offer search)")
     run.add_argument("--image", default=DEFAULT_IMAGE)
     run.add_argument("--identity", type=Path, default=Path.home() / ".ssh" / "id_ed25519_vast")
     run.add_argument("--keep", action="store_true", help="do not destroy the instance at the end")

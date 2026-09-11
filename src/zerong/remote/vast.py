@@ -41,7 +41,7 @@ class JobSpec:
     gpu_name: str = "RTX 3090"
     max_dph: float = 0.20
     max_hours: float = 8.0
-    disk_gb: int = 120
+    disk_gb: int = 60
     image: str = DEFAULT_IMAGE
 
 
@@ -157,12 +157,19 @@ def ssh_command(target: SshTarget, identity: Path, remote_cmd: str) -> list[str]
 def ssh(
     target: SshTarget, identity: Path, remote_cmd: str, stdin: str | None = None, timeout=300
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    # Bytes, not text mode: on Windows, text-mode pipes turn "\n" into "\r\n", and bash then
+    # fails on the uploaded job script ("set: pipefail: invalid option name").
+    result = subprocess.run(
         ssh_command(target, identity, remote_cmd),
         capture_output=True,
-        text=True,
-        input=stdin,
+        input=stdin.encode() if stdin is not None else None,
         timeout=timeout,
+    )
+    return subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        result.stdout.decode(errors="replace"),
+        result.stderr.decode(errors="replace"),
     )
 
 
@@ -205,7 +212,11 @@ class VastJob:
                 )
         repo_url, commit = pushed_commit(repo_dir)
         query = offer_query(self.spec.gpu_name, self.spec.max_dph, self.spec.disk_gb)
-        offer = select_offer(vastai_json("search", "offers", query, "-o", "dph"), self.spec.max_dph)
+        # --storage makes dph_total include the disk we will rent (the default prices 5 GB only).
+        offers = vastai_json(
+            "search", "offers", query, "-o", "dph", "--storage", str(self.spec.disk_gb)
+        )
+        offer = select_offer(offers, self.spec.max_dph)
         self.log(
             f"offer {offer['id']}: {offer['gpu_name']} ${offer['dph_total']:.3f}/h "
             f"{offer.get('geolocation', '')}"
