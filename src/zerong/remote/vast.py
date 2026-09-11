@@ -81,16 +81,61 @@ def ssh_target(info: dict) -> SshTarget | None:
     return None
 
 
-def render_job_script(repo_url: str, commit: str, datasets: list[str], commands: list[str]) -> str:
-    """Bash script run on the instance. Its exit code is written to REMOTE_EXIT."""
+# Stops (never destroys) the instance using the key vast.ai scopes to this container, read from
+# PID 1's environment. Stopped instances keep their disk, so results stay recoverable.
+STOP_SELF_SCRIPT = r"""#!/usr/bin/env bash
+env_of() { tr '\0' '\n' < /proc/1/environ | sed -n "s/^$1=//p"; }
+curl -s -o /dev/null -w "[zerong-job] self-stop http=%{http_code}\n" -X PUT \
+  "https://console.vast.ai/api/v0/instances/$(env_of CONTAINER_ID)/" \
+  -H "Authorization: Bearer $(env_of CONTAINER_API_KEY)" \
+  -H "Content-Type: application/json" -d '{"state": "stopped"}'
+"""
+ENV_OF = r"""env_of() { tr '\0' '\n' < /proc/1/environ | sed -n "s/^$1=//p"; }"""
+API_CHECK = (
+    r"""echo "[zerong-job] watchdog api check http=$(curl -s -o /dev/null -w '%{http_code}' """
+    r"""-H "Authorization: Bearer $(env_of CONTAINER_API_KEY)" """
+    r""""https://console.vast.ai/api/v0/instances/$(env_of CONTAINER_ID)/?owner=me")" """
+)
+WATCHDOG_GRACE_HOURS = 1.0
+
+
+def render_job_script(
+    repo_url: str,
+    commit: str,
+    datasets: list[str],
+    commands: list[str],
+    max_hours: float,
+    grace_hours: float = WATCHDOG_GRACE_HOURS,
+) -> str:
+    """Bash script run on the instance. Its exit code is written to REMOTE_EXIT.
+
+    Safety net for when the local launcher dies (it was once killed by the OS on low memory and
+    the instance sat idle for hours): the instance stops itself at the hard deadline
+    (``max_hours`` + 15 min, after the launcher's own timeout), or ``grace_hours`` after the job
+    ends if nobody has destroyed it by then.
+    """
+    deadline_s = int((max_hours + 0.25) * 3600)
+    grace_s = int(grace_hours * 3600)
+    watchdog = (
+        "watchdog() { setsid nohup bash -c \"sleep $1; echo '[zerong-job] $2'; "
+        f'bash /root/stop_self.sh" >> {REMOTE_LOG} 2>&1 < /dev/null & }}'
+    )
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        f"trap 'echo $? > {REMOTE_EXIT}' EXIT",
         "export DEBIAN_FRONTEND=noninteractive MLFLOW_DISABLE_AGENT_HINT=1",
+        "cat > /root/stop_self.sh <<'STOP'",
+        STOP_SELF_SCRIPT.rstrip("\n"),
+        "STOP",
+        ENV_OF,
+        watchdog,
+        f"on_exit() {{ echo $? > {REMOTE_EXIT}; watchdog {grace_s} 'job ended, grace over'; }}",
+        "trap on_exit EXIT",
         'echo "[zerong-job] setup"',
         "apt-get update -qq",
         "apt-get install -y -qq git curl ca-certificates libglib2.0-0 libgl1 > /dev/null",
+        f"watchdog {deadline_s} 'deadline reached'",
+        API_CHECK,
         "curl -LsSf https://astral.sh/uv/install.sh | sh",
         'export PATH="$HOME/.local/bin:$PATH"',
         f"git clone -q {shlex.quote(repo_url)} {REMOTE_REPO}",
@@ -244,7 +289,9 @@ class VastJob:
         exit_code: int | None = None
         try:
             target = self.wait_for_ssh(timeout_s=1200)
-            script = render_job_script(repo_url, commit, self.spec.datasets, self.spec.commands)
+            script = render_job_script(
+                repo_url, commit, self.spec.datasets, self.spec.commands, self.spec.max_hours
+            )
             self.check(ssh(target, self.identity, "cat > /root/job.sh", stdin=script))
             self.check(
                 ssh(

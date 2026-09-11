@@ -47,10 +47,24 @@ def test_job_script_checks_out_exact_commit_and_runs_commands_in_order():
         "abc123",
         ["mvtec_ad", "visa"],
         ["uv run python a.py", "uv run python b.py"],
+        max_hours=6,
     )
     assert script.startswith("#!/usr/bin/env bash\nset -euo pipefail")
-    assert f"> {REMOTE_EXIT}' EXIT" in script  # exit code always recorded
+    assert "\r" not in script
+    assert f"echo $? > {REMOTE_EXIT}" in script and "trap on_exit EXIT" in script
     assert "git checkout -q abc123" in script
     assert "uv sync --frozen" in script
     assert "download_data.py --dataset mvtec_ad visa" in script
     assert script.index("uv run python a.py") < script.index("uv run python b.py")
+
+
+def test_job_script_watchdog_stops_but_never_destroys():
+    script = render_job_script("https://x/ZeroNG.git", "abc123", [], ["true"], max_hours=6)
+    assert f"watchdog {int(6.25 * 3600)} " in script  # hard deadline after launcher timeout
+    assert "watchdog 3600 " in script  # grace period after the job ends
+    assert '{"state": "stopped"}' in script
+    assert "DELETE" not in script and "destroy" not in script
+    # The deadline watchdog starts only once curl is installed.
+    assert script.index("apt-get install") < script.index(f"watchdog {int(6.25 * 3600)} ")
+    # The container key is only read from PID 1's environment, never echoed.
+    assert "echo $(env_of CONTAINER_API_KEY)" not in script
