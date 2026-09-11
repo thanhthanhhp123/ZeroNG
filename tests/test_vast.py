@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -64,6 +65,26 @@ def test_poll_survives_ssh_timeouts(tmp_path, monkeypatch):
     exit_code = job.poll(vast.SshTarget("host", 22), deadline=vast.time.monotonic() + 60, every_s=0)
     assert exit_code == 0
     assert any("bottle done" in line for line in logs)
+
+
+def test_known_bad_machines_reads_previous_jobs(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "job.json").write_text(
+        json.dumps(
+            {
+                "attempts": [
+                    {"machine_id": 10, "outcome": "unreachable"},
+                    {"machine_id": 20, "outcome": "succeeded"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "job.json").write_text("not json", encoding="utf-8")
+    (tmp_path / "c").mkdir()
+    (tmp_path / "c" / "job.json").write_text(json.dumps({"status": "error"}), encoding="utf-8")
+    assert vast.known_bad_machines(tmp_path) == {10}
 
 
 def test_ssh_target_prefers_direct():

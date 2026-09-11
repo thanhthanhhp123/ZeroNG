@@ -26,7 +26,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-DEFAULT_IMAGE = "nvidia/cuda:12.6.3-base-ubuntu22.04"
+# vast.ai's own base image (widely used on the platform, so often already on the host). With
+# nvidia/cuda:12.6.3-base-ubuntu22.04 from Docker Hub, 3 of the first 5 hosts never finished
+# loading the container; the image is a suspected, not proven, cause.
+DEFAULT_IMAGE = "vastai/base-image:cuda-12.6.3-auto"
 REMOTE_REPO = "/root/ZeroNG"
 REMOTE_LOG = "/root/job.log"
 REMOTE_EXIT = "/root/job.exit"
@@ -170,6 +173,20 @@ def render_job_script(
     return "\n".join(lines) + "\n"
 
 
+def known_bad_machines(runs_dir: Path) -> set:
+    """Machines that never became reachable in any previous job under ``runs_dir``."""
+    bad = set()
+    for state_file in Path(runs_dir).glob("*/job.json"):
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for attempt in state.get("attempts", []):
+            if attempt.get("outcome") == "unreachable" and attempt.get("machine_id") is not None:
+                bad.add(attempt["machine_id"])
+    return bad
+
+
 # --------------------------------------------------------------------------- side effects
 
 
@@ -277,7 +294,9 @@ class VastJob:
             "attempts": [],
             "status": "provisioning",
         }
-        failed_machines: set = set()
+        failed_machines = known_bad_machines(self.state_dir.parent)
+        if failed_machines:
+            self.log(f"skipping machines that failed before: {sorted(failed_machines)}")
         for _ in range(self.spec.max_attempts):
             offer = self.create_instance(failed_machines)
             started = time.monotonic()
