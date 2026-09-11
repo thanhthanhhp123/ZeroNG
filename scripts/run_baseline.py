@@ -18,6 +18,7 @@ import json
 import logging
 import platform
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -126,6 +127,8 @@ def run_one(
         default_root_dir=run_dir / "anomalib",
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
+        # Progress bars only in a terminal: in a remote job log they are megabytes of noise.
+        enable_progress_bar=sys.stderr.isatty(),
         # Lightning stops at whichever limit comes first; models may override (PatchCore: 1 epoch).
         max_epochs=train_cfg.get("max_epochs"),
         max_steps=train_cfg.get("max_steps", -1),

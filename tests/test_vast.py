@@ -1,5 +1,8 @@
+import subprocess
+
 import pytest
 
+from zerong.remote import vast
 from zerong.remote.vast import (
     REMOTE_EXIT,
     SshTarget,
@@ -36,6 +39,31 @@ def test_select_offer_skips_machines_that_failed():
     assert select_offer(offers, 0.2, exclude_machines={10})["id"] == 3
     with pytest.raises(RuntimeError):
         select_offer(offers, 0.2, exclude_machines={10, 20})
+
+
+def test_poll_survives_ssh_timeouts(tmp_path, monkeypatch):
+    # Regression: an uncaught ssh timeout once made the launcher destroy a running instance.
+    responses = iter(
+        [
+            subprocess.TimeoutExpired("ssh", 60),
+            OSError("connection reset"),
+            subprocess.CompletedProcess([], 0, "0\n---\nrun_baseline: bottle done\n", ""),
+        ]
+    )
+
+    def fake_ssh(*args, **kwargs):
+        item = next(responses)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(vast, "ssh", fake_ssh)
+    monkeypatch.setattr(vast.time, "sleep", lambda s: None)
+    logs: list[str] = []
+    job = vast.VastJob(vast.JobSpec(name="t", commands=[]), tmp_path, tmp_path / "key", logs.append)
+    exit_code = job.poll(vast.SshTarget("host", 22), deadline=vast.time.monotonic() + 60, every_s=0)
+    assert exit_code == 0
+    assert any("bottle done" in line for line in logs)
 
 
 def test_ssh_target_prefers_direct():

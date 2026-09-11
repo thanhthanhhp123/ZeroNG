@@ -299,6 +299,7 @@ class VastJob:
             raise RuntimeError(f"no reachable machine after {self.spec.max_attempts} attempts")
 
         exit_code: int | None = None
+        job_started = False
         try:
             script = render_job_script(
                 repo_url, commit, self.spec.datasets, self.spec.commands, self.spec.max_hours
@@ -311,6 +312,7 @@ class VastJob:
                     f"nohup setsid bash /root/job.sh > {REMOTE_LOG} 2>&1 < /dev/null &",
                 )
             )
+            job_started = True
             self.state["status"] = "running"
             self.save()
             deadline = started + self.spec.max_hours * 3600
@@ -322,6 +324,12 @@ class VastJob:
             self.state["exit_code"] = exit_code
         except BaseException as exc:
             self.state["status"] = f"error: {exc!r}"[:300]
+            if job_started:
+                # Keep whatever the job produced before the instance is destroyed.
+                try:
+                    self.fetch(target)
+                except Exception as fetch_exc:
+                    self.log(f"could not fetch partial results: {fetch_exc!r}")
             raise
         finally:
             self.close_attempt(offer, started, self.state["status"], keep)
@@ -410,14 +418,22 @@ class VastJob:
     def poll(self, target: SshTarget, deadline: float, every_s: int = 60) -> int | None:
         seen: set[str] = set()
         failures = 0
+        # Only the tail of the log is scanned, so each probe stays cheap as the log grows.
+        probe = (
+            f"cat {REMOTE_EXIT} 2>/dev/null; echo '---'; "
+            f"tail -c 2000000 {REMOTE_LOG} | grep -a '{PROGRESS_PATTERN}' | tail -n 20"
+        )
         while time.monotonic() < deadline:
-            probe = (
-                f"cat {REMOTE_EXIT} 2>/dev/null; echo '---'; "
-                f"grep -a '{PROGRESS_PATTERN}' {REMOTE_LOG} | tail -n 20"
-            )
-            result = ssh(target, self.identity, probe, timeout=60)
-            if result.returncode != 0:
+            try:
+                result = ssh(target, self.identity, probe, timeout=60)
+                ok = result.returncode == 0
+            except (subprocess.TimeoutExpired, OSError):
+                # A slow or dropped connection is not a job failure. (An uncaught timeout here
+                # once made the launcher destroy an instance in the middle of a sweep.)
+                ok = False
+            if not ok:
                 failures += 1
+                self.log(f"progress probe failed ({failures}/10)")
                 if failures > 10:
                     raise RuntimeError("lost ssh connection to the instance")
             else:
