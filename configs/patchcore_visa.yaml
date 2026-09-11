@@ -1,0 +1,31 @@
+# PatchCore baseline on VisA (weeks 1-2). VisA test sets have a single defect type ("bad").
+experiment: baseline
+
+dataset:
+  name: visa
+  root: data/visa/visa_pytorch
+  categories: [candle, capsules, cashew, chewinggum, fryum, macaroni1, macaroni2, pcb1, pcb2,
+               pcb3, pcb4, pipe_fryum]
+  image_size: 256
+
+split:
+  val_fraction: 0.3
+  val_good_fraction: 0.1
+
+model:
+  name: patchcore
+  params:
+    backbone: wide_resnet50_2
+    layers: [layer2, layer3]
+    coreset_sampling_ratio: 0.1
+    num_neighbors: 9
+
+train:
+  seeds: [0, 1, 2]
+  batch_size: 8
+  max_epochs: 1
+  # Each Windows worker process holds its own torch + anomalib import (~1 GB RAM).
+  num_workers: 2
+
+calibration:
+  zero_ng_max_frr: 0.01

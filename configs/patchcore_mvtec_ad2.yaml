@@ -1,0 +1,34 @@
+# PatchCore baseline on MVTec AD 2 (public test set). The dataset's own validation/good set is
+# used as val_good; test_public is split into val/test by the protocol. The private test sets
+# (incl. unseen lighting) have no public ground truth and are scored only by MVTec's server.
+experiment: baseline
+
+dataset:
+  name: mvtec_ad2
+  layout: mvtec_ad2
+  root: data/mvtec_ad2
+  categories: [can, fabric, fruit_jelly, rice, sheet_metal, vial, wallplugs, walnuts]
+  # High-resolution images: small defects shrink a lot at 256 px. Kept at 256 for comparability
+  # with the other baselines; a higher-resolution run is a separate experiment.
+  image_size: 256
+
+split:
+  val_fraction: 0.3
+  val_good_fraction: 0.1  # ignored: the dataset provides validation/good
+
+model:
+  name: patchcore
+  params:
+    backbone: wide_resnet50_2
+    layers: [layer2, layer3]
+    coreset_sampling_ratio: 0.1
+    num_neighbors: 9
+
+train:
+  seeds: [0, 1, 2]
+  batch_size: 8
+  max_epochs: 1
+  num_workers: 4
+
+calibration:
+  zero_ng_max_frr: 0.01

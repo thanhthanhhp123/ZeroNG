@@ -1,0 +1,32 @@
+# Local-only agent instructions (reference a confidential project; the repo is public)
+CLAUDE.md
+
+# Data and large artifacts never go in git
+data/*
+!data/LICENSES.md
+results/
+remote_runs/
+mlruns/
+mlartifacts/
+mlflow.db
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.xml
+*.bin
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

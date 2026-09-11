@@ -1,0 +1,32 @@
+# EfficientAD-S baseline on MVTec AD (weeks 1-2).
+experiment: baseline
+
+dataset:
+  name: mvtec_ad
+  root: data/mvtec_ad
+  categories: [bottle, cable, capsule, carpet, grid, hazelnut, leather, metal_nut, pill, screw,
+               tile, toothbrush, transistor, wood, zipper]
+  image_size: 256
+
+split:
+  val_fraction: 0.3
+  val_good_fraction: 0.1
+
+model:
+  name: efficientad
+  # Passed unchanged to anomalib.models.EfficientAd.
+  params:
+    model_size: small
+
+train:
+  seeds: [0, 1, 2]
+  # EfficientAD requires batch size 1.
+  batch_size: 1
+  # Paper setting: 70k steps. Roughly 1 h per category and seed on a GTX 1660 Super, so the full
+  # 15 x 3 sweep belongs on the A100 node. Pass a smaller budget only for smoke tests.
+  max_steps: 70000
+  # Each Windows worker process holds its own torch + anomalib import (~1 GB RAM).
+  num_workers: 2
+
+calibration:
+  zero_ng_max_frr: 0.01

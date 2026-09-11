@@ -1,0 +1,34 @@
+# PatchCore baseline on MVTec AD (weeks 1-2).
+experiment: baseline
+
+dataset:
+  name: mvtec_ad
+  root: data/mvtec_ad
+  categories: [bottle, cable, capsule, carpet, grid, hazelnut, leather, metal_nut, pill, screw,
+               tile, toothbrush, transistor, wood, zipper]
+  image_size: 256
+
+split:
+  val_fraction: 0.3
+  val_good_fraction: 0.1
+
+model:
+  name: patchcore
+  # Passed unchanged to anomalib.models.Patchcore. Coreset ratio 0.1 keeps the memory bank
+  # within the 6 GB GPU budget at 256px.
+  params:
+    backbone: wide_resnet50_2
+    layers: [layer2, layer3]
+    coreset_sampling_ratio: 0.1
+    num_neighbors: 9
+
+train:
+  seeds: [0, 1, 2]
+  batch_size: 8
+  max_epochs: 1
+  # Each Windows worker process holds its own torch + anomalib import (~1 GB RAM).
+  num_workers: 2
+
+calibration:
+  # Zero-NG threshold: reject at most this fraction of held-out good images (val_good).
+  zero_ng_max_frr: 0.01
