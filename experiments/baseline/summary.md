@@ -1,3 +1,12 @@
+Macro averages over categories:
+
+| Model | Dataset | Image AUROC | AUPRO | FRR @ 0 escape | Zero-NG FRR | Zero-NG escape |
+|---|---|---|---|---|---|---|
+| patchcore | mvtec_ad | 0.976 ± 0.036 | 0.931 ± 0.029 | 30.7% ± 30.8 | 13.9% ± 14.5 | 4.3% ± 6.3 |
+| patchcore | visa | 0.904 ± 0.107 | 0.867 ± 0.060 | 53.3% ± 29.7 | 1.2% ± 2.3 | 52.5% ± 27.1 |
+
+![Image AUROC against the false rejects needed for zero escape, one point per category](experiments/baseline/auroc_vs_frr.png)
+
 ### patchcore on mvtec_ad
 
 | Category | Image AUROC | Pixel AUROC | AUPRO | FRR @ 0 escape | Zero-NG FRR | Zero-NG escape | Val-cal FRR | Val-cal escape | Seeds |

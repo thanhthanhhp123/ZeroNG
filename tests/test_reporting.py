@@ -8,6 +8,7 @@ from zerong.reporting import (
     aggregate,
     dataset_mean,
     format_value,
+    headline_table,
     latest_per_seed,
     markdown_table,
 )
@@ -60,6 +61,17 @@ def test_format_value():
     assert format_value("test_image_auroc", 0.97634, 0.0021) == "0.976 ± 0.002"
     assert format_value("test_frr_at_zero_escape", 0.3071, 0.052) == "30.7% ± 5.2"
     assert format_value("test_aupro", float("nan"), float("nan")) == "n/a"
+
+
+def test_headline_table_has_one_row_per_dataset():
+    groups = {
+        ("patchcore", "mvtec_ad"): aggregate([_run("bottle", 0, 1.0), _run("cable", 0, 0.9)]),
+        ("patchcore", "visa"): aggregate([_run("candle", 0, 0.8)]),
+    }
+    lines = headline_table(groups).splitlines()
+    assert len(lines) == 2 + 2  # header, separator, two datasets
+    assert lines[2].startswith("| patchcore | mvtec_ad |")
+    assert "0.950 ± 0.071" in lines[2]  # macro mean over the two categories
 
 
 def test_markdown_table_shape():

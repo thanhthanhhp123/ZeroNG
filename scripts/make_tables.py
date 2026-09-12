@@ -24,7 +24,13 @@ from pathlib import Path
 
 import mlflow
 
-from zerong.reporting import METRICS, RunRecord, aggregate, markdown_table
+from zerong.reporting import METRICS, RunRecord, aggregate, headline_table, markdown_table
+
+# Chart tokens: validated categorical slots 1-2 on the light chart surface (all-pairs CVD
+# separation 24.7, normal-vision 33.6), with surface/grid/ink tokens from the same palette.
+SURFACE, GRID, AXIS_LINE = "#fcfcfb", "#e1e0d9", "#c3c2b7"
+INK, SECONDARY_INK, MUTED_INK = "#0b0b0b", "#52514e", "#898781"
+SERIES_COLORS = ("#2a78d6", "#eb6834")
 
 REPO = Path(__file__).resolve().parents[1]
 README_START, README_END = "<!-- results:start -->", "<!-- results:end -->"
@@ -78,10 +84,76 @@ def write_csv(path: Path, rows: list[dict]) -> None:
             )
 
 
-def render_summary(groups: dict[tuple, list[dict]], runs: list[RunRecord], command: str) -> str:
+def plot_auroc_vs_frr(groups: dict[tuple, list[dict]], path: Path) -> None:
+    """One point per category: image AUROC against the false rejects needed for zero escape."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=160)
+    fig.patch.set_facecolor(SURFACE)
+    ax.set_facecolor(SURFACE)
+    for i, ((_model, dataset), rows) in enumerate(sorted(groups.items())):
+        color = SERIES_COLORS[i % len(SERIES_COLORS)]
+        xs = [r["test_image_auroc_mean"] for r in rows]
+        ys = [100 * r["test_frr_at_zero_escape_mean"] for r in rows]
+        # >=8px markers with a 2px surface ring, so overlapping points stay legible.
+        ax.scatter(xs, ys, s=80, color=color, edgecolors=SURFACE, linewidths=2, zorder=3,
+                   label=dataset)  # fmt: skip
+        # Label selectively: the worst false-reject rate and the weakest AUROC of each dataset.
+        worst = max(rows, key=lambda r: r["test_frr_at_zero_escape_mean"])
+        weakest = min(rows, key=lambda r: r["test_image_auroc_mean"])
+        for row in {id(worst): worst, id(weakest): weakest}.values():
+            ax.annotate(
+                row["category"],
+                (row["test_image_auroc_mean"], 100 * row["test_frr_at_zero_escape_mean"]),
+                textcoords="offset points",
+                xytext=(9, 6),  # above right: at the top-left cluster, dots sit side by side
+                fontsize=9,
+                color=SECONDARY_INK,
+            )
+
+    ax.set_title(
+        "A high AUROC does not mean the line can use it",
+        loc="left", fontsize=13, color=INK, pad=18, fontweight="semibold",
+    )  # fmt: skip
+    ax.text(
+        0, 1.03, "One point per category, mean over seeds; PatchCore at 256 px",
+        transform=ax.transAxes, fontsize=10, color=SECONDARY_INK,
+    )  # fmt: skip
+    ax.set_xlabel("Image AUROC", fontsize=10, color=SECONDARY_INK)
+    ax.set_ylabel("Good parts rejected to let no defect through", fontsize=10, color=SECONDARY_INK)
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
+    ax.set_ylim(-4, 104)
+    ax.grid(True, color=GRID, linewidth=1, linestyle="-")
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(AXIS_LINE)
+    ax.tick_params(colors=MUTED_INK, labelsize=9, length=0)
+    # Lower left: the only quadrant the data leaves empty (a weak model is never cheap).
+    ax.margins(x=0.06)
+    legend = ax.legend(frameon=False, loc="lower left", fontsize=10)
+    for text in legend.get_texts():
+        text.set_color(SECONDARY_INK)  # identity comes from the dot, not from coloured text
+    fig.savefig(path, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+
+
+def render_summary(
+    groups: dict[tuple, list[dict]], runs: list[RunRecord], command: str, figure: str | None = None
+) -> str:
     commits = sorted({r.git_commit[:8] for r in runs})
     hardware = sorted({r.hardware for r in runs if r.hardware})
-    parts = []
+    parts = ["Macro averages over categories:", "", headline_table(groups), ""]
+    if figure:
+        parts += [
+            f"![Image AUROC against the false rejects needed for zero escape, "
+            f"one point per category]({figure})",
+            "",
+        ]
     for (model, dataset), rows in sorted(groups.items()):
         parts += [f"### {model} on {dataset}", "", markdown_table(rows), ""]
     parts += [
@@ -147,7 +219,9 @@ def main() -> None:
     command = "uv run python scripts/make_tables.py " + " ".join(
         [*(f"--store {rel(s)}" for s in stores), f"--experiment {args.experiment}"]
     )
-    summary = render_summary(groups, runs, command)
+    figure_path = out / "auroc_vs_frr.png"
+    plot_auroc_vs_frr(groups, figure_path)
+    summary = render_summary(groups, runs, command, figure=rel(figure_path))
     (out / "summary.md").write_text(summary, encoding="utf-8")
     log.info("wrote %s", rel(out))
     if not args.no_readme and update_readme(REPO / "README.md", summary):

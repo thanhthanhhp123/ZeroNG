@@ -82,6 +82,27 @@ def dataset_mean(rows: list[dict]) -> dict:
     return out
 
 
+HEADLINE_METRICS = (
+    "test_image_auroc",
+    "test_aupro",
+    "test_frr_at_zero_escape",
+    "zerong_test_frr",
+    "zerong_test_escape_rate",
+)
+
+
+def headline_table(groups: dict[tuple, list[dict]]) -> str:
+    """Compact table of the macro averages, one row per (model, dataset)."""
+    header = ["Model", "Dataset", *(METRICS[k] for k in HEADLINE_METRICS)]
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    for (model, dataset), rows in sorted(groups.items()):
+        mean = dataset_mean(rows)
+        cells = [model, dataset]
+        cells += [format_value(k, mean[f"{k}_mean"], mean[f"{k}_std"]) for k in HEADLINE_METRICS]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def format_value(key: str, mean: float, std: float) -> str:
     if math.isnan(mean):
         return "n/a"

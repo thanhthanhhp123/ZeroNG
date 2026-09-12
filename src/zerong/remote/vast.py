@@ -215,13 +215,18 @@ def vastai_json(*args: str):
     return json.loads(out[min(starts) :])
 
 
-def ssh_command(target: SshTarget, identity: Path, remote_cmd: str) -> list[str]:
+def ssh_command(
+    target: SshTarget, identity: Path, remote_cmd: str, known_hosts: Path | None = None
+) -> list[str]:
+    # Instances are short-lived, so their host keys are throwaway. Keep them in a file we own:
+    # on Windows, pointing ssh at os.devnull ("nul") creates a literal file named `nul` in the
+    # working directory, which git then refuses to index.
     return [
         "ssh",
         "-i", str(identity),
         "-p", str(target.port),
         "-o", "StrictHostKeyChecking=no",
-        "-o", f"UserKnownHostsFile={os.devnull}",
+        "-o", f"UserKnownHostsFile={known_hosts or os.devnull}",
         "-o", "ConnectTimeout=20",
         "-o", "ServerAliveInterval=30",
         "-o", "LogLevel=ERROR",
@@ -231,12 +236,17 @@ def ssh_command(target: SshTarget, identity: Path, remote_cmd: str) -> list[str]
 
 
 def ssh(
-    target: SshTarget, identity: Path, remote_cmd: str, stdin: str | None = None, timeout=300
+    target: SshTarget,
+    identity: Path,
+    remote_cmd: str,
+    stdin: str | None = None,
+    timeout=300,
+    known_hosts: Path | None = None,
 ) -> subprocess.CompletedProcess:
     # Bytes, not text mode: on Windows, text-mode pipes turn "\n" into "\r\n", and bash then
     # fails on the uploaded job script ("set: pipefail: invalid option name").
     result = subprocess.run(
-        ssh_command(target, identity, remote_cmd),
+        ssh_command(target, identity, remote_cmd, known_hosts),
         capture_output=True,
         input=stdin.encode() if stdin is not None else None,
         timeout=timeout,
@@ -273,6 +283,7 @@ class VastJob:
         self.identity = Path(identity)
         self.log = log
         self.state_file = self.state_dir / "job.json"
+        self.known_hosts = self.state_dir / "known_hosts"
         self.state: dict = {}
 
     def save(self) -> None:
@@ -323,12 +334,21 @@ class VastJob:
             script = render_job_script(
                 repo_url, commit, self.spec.datasets, self.spec.commands, self.spec.max_hours
             )
-            self.check(ssh(target, self.identity, "cat > /root/job.sh", stdin=script))
+            self.check(
+                ssh(
+                    target,
+                    self.identity,
+                    "cat > /root/job.sh",
+                    stdin=script,
+                    known_hosts=self.known_hosts,
+                )
+            )
             self.check(
                 ssh(
                     target,
                     self.identity,
                     f"nohup setsid bash /root/job.sh > {REMOTE_LOG} 2>&1 < /dev/null &",
+                    known_hosts=self.known_hosts,
                 )
             )
             job_started = True
@@ -428,9 +448,11 @@ class VastJob:
                 self.log(f"instance status: {status}")
                 last_status = status
             target = ssh_target(info) if status == "running" else None
-            if target and ssh(target, self.identity, "true", timeout=40).returncode == 0:
-                self.log(f"ssh ready: {target.user}@{target.host}:{target.port}")
-                return target
+            if target:
+                probe = ssh(target, self.identity, "true", timeout=40, known_hosts=self.known_hosts)
+                if probe.returncode == 0:
+                    self.log(f"ssh ready: {target.user}@{target.host}:{target.port}")
+                    return target
             time.sleep(15)
         raise TimeoutError("instance did not become reachable over ssh in time")
 
@@ -444,7 +466,7 @@ class VastJob:
         )
         while time.monotonic() < deadline:
             try:
-                result = ssh(target, self.identity, probe, timeout=60)
+                result = ssh(target, self.identity, probe, timeout=60, known_hosts=self.known_hosts)
                 ok = result.returncode == 0
             except (subprocess.TimeoutExpired, OSError):
                 # A slow or dropped connection is not a job failure. (An uncaught timeout here
@@ -476,7 +498,10 @@ class VastJob:
         )
         with archive.open("wb") as f:
             subprocess.run(
-                ssh_command(target, self.identity, remote), stdout=f, timeout=3600, check=False
+                ssh_command(target, self.identity, remote, self.known_hosts),
+                stdout=f,
+                timeout=3600,
+                check=False,
             )
         with tarfile.open(archive) as tar:
             tar.extractall(self.state_dir, filter="data")

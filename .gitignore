@@ -28,5 +28,7 @@ __pycache__/
 # OS / editor
 .DS_Store
 Thumbs.db
+# Windows device name: tools pointed at os.devnull can create a file git cannot index
+nul
 .vscode/
 .idea/

@@ -87,6 +87,14 @@ def test_known_bad_machines_reads_previous_jobs(tmp_path):
     assert vast.known_bad_machines(tmp_path) == {10}
 
 
+def test_ssh_command_uses_a_known_hosts_file_we_own(tmp_path):
+    # Regression: UserKnownHostsFile=os.devnull creates a file literally named `nul` on Windows.
+    known_hosts = tmp_path / "known_hosts"
+    cmd = vast.ssh_command(SshTarget("h", 22), tmp_path / "key", "true", known_hosts)
+    assert f"UserKnownHostsFile={known_hosts}" in cmd
+    assert "UserKnownHostsFile=nul" not in cmd
+
+
 def test_ssh_target_prefers_direct():
     info = {
         "public_ipaddr": "1.2.3.4 ",
